@@ -19,8 +19,8 @@ if (!process.env.OPENAI_API_KEY) {
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-  maxRetries: 3,
-  timeout: 90000
+  maxRetries: 1,
+  timeout: 30000
 });
 
 const PORT = Number(process.env.PORT || 3124);
@@ -85,20 +85,20 @@ function getPublicError(error) {
 async function withOpenAIRetry(label, fn) {
   let lastError;
 
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
       return await fn();
     } catch (error) {
       lastError = error;
       const code = error?.code || error?.cause?.code || error?.status || error?.name;
-      console.warn(`${label} failed, attempt ${attempt}/3:`, code);
+      console.warn(`${label} failed, attempt ${attempt}/2:`, code);
 
       if (error?.status && error.status < 500 && error.status !== 429) {
         throw error;
       }
 
-      if (attempt < 3) {
-        await sleep(900 * attempt);
+      if (attempt < 2) {
+        await sleep(700 * attempt);
       }
     }
   }
@@ -181,6 +181,14 @@ app.post('/conversation', requireToken, async (req, res) => {
 
     if (!audioBase64 || !npcName || !personality) {
       res.status(400).json({ error: 'Missing required fields' });
+      return;
+    }
+
+    if (audioBase64.length > 3 * 1024 * 1024) {
+      res.status(400).json({
+        error: 'Audio too large',
+        message: 'Audio trop long. Parle moins de 6 secondes.'
+      });
       return;
     }
 
