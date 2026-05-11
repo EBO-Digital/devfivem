@@ -17,7 +17,11 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  maxRetries: 3,
+  timeout: 90000
+});
 
 const PORT = Number(process.env.PORT || 3124);
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${PORT}`;
@@ -51,32 +55,87 @@ function cleanReply(text) {
     .slice(0, 420);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getPublicError(error) {
+  const code = error?.code || error?.cause?.code;
+  const status = error?.status;
+
+  if (code === 'ECONNRESET' || error?.name === 'APIConnectionError') {
+    return 'Connexion OpenAI interrompue. Reessaie dans quelques secondes.';
+  }
+
+  if (status === 401) {
+    return 'Cle OpenAI invalide ou absente.';
+  }
+
+  if (status === 429) {
+    return 'Quota ou limite OpenAI atteint.';
+  }
+
+  if (status === 400) {
+    return 'Audio refuse par OpenAI. Essaie une phrase plus courte.';
+  }
+
+  return 'Traitement IA impossible pour le moment.';
+}
+
+async function withOpenAIRetry(label, fn) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const code = error?.code || error?.cause?.code || error?.status || error?.name;
+      console.warn(`${label} failed, attempt ${attempt}/3:`, code);
+
+      if (error?.status && error.status < 500 && error.status !== 429) {
+        throw error;
+      }
+
+      if (attempt < 3) {
+        await sleep(900 * attempt);
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 async function transcribeAudio({ audioBase64, mimeType }) {
   const audioBuffer = Buffer.from(audioBase64, 'base64');
   const extension = mimeType.includes('wav') ? 'wav' : 'webm';
   const file = await toFile(audioBuffer, `player.${extension}`, { type: mimeType });
 
-  const transcription = await openai.audio.transcriptions.create({
-    model: STT_MODEL,
-    file,
-    language: 'fr'
+  const transcription = await withOpenAIRetry('transcription', () => {
+    return openai.audio.transcriptions.create({
+      model: STT_MODEL,
+      file,
+      language: 'fr'
+    });
   });
 
   return transcription.text?.trim() || '';
 }
 
 async function createNpcReply({ npcName, personality, playerName, transcript }) {
-  const response = await openai.responses.create({
-    model: TEXT_MODEL,
-    instructions: [
-      personality,
-      'Tu es dans une scene roleplay FiveM a Los Santos.',
-      'Reponds uniquement avec la replique du PNJ.',
-      'Maximum deux phrases courtes.',
-      'Ne mentionne pas OpenAI, IA, API, backend, script ou HRP.',
-      'Si la demande est dangereuse, impossible ou hors RP, refuse naturellement dans le role.'
-    ].join('\n'),
-    input: `${playerName} dit a ${npcName}: ${transcript}`
+  const response = await withOpenAIRetry('reply', () => {
+    return openai.responses.create({
+      model: TEXT_MODEL,
+      instructions: [
+        personality,
+        'Tu es dans une scene roleplay FiveM a Los Santos.',
+        'Reponds uniquement avec la replique du PNJ.',
+        'Maximum deux phrases courtes.',
+        'Ne mentionne pas OpenAI, IA, API, backend, script ou HRP.',
+        'Si la demande est dangereuse, impossible ou hors RP, refuse naturellement dans le role.'
+      ].join('\n'),
+      input: `${playerName} dit a ${npcName}: ${transcript}`
+    });
   });
 
   return cleanReply(response.output_text);
@@ -88,12 +147,14 @@ async function synthesizeSpeech({ reply, voice, voiceInstructions }) {
   const fileName = `${Date.now()}-${crypto.randomUUID()}.mp3`;
   const filePath = path.join(audioDir, fileName);
 
-  const speech = await openai.audio.speech.create({
-    model: TTS_MODEL,
-    voice: voice || 'coral',
-    input: reply,
-    instructions: voiceInstructions || 'Voix francaise naturelle, conversationnelle.',
-    response_format: 'mp3'
+  const speech = await withOpenAIRetry('speech', () => {
+    return openai.audio.speech.create({
+      model: TTS_MODEL,
+      voice: voice || 'coral',
+      input: reply,
+      instructions: voiceInstructions || 'Voix francaise naturelle, conversationnelle.',
+      response_format: 'mp3'
+    });
   });
 
   const buffer = Buffer.from(await speech.arrayBuffer());
@@ -145,7 +206,10 @@ app.post('/conversation', requireToken, async (req, res) => {
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'AI processing failed' });
+    res.status(500).json({
+      error: 'AI processing failed',
+      message: getPublicError(error)
+    });
   }
 });
 
