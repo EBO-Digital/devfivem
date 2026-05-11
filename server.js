@@ -27,7 +27,7 @@ const PORT = Number(process.env.PORT || 3124);
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${PORT}`;
 const AI_NPC_TOKEN = process.env.AI_NPC_TOKEN || 'change-moi';
 const TEXT_MODEL = process.env.TEXT_MODEL || 'gpt-5.2';
-const STT_MODEL = process.env.STT_MODEL || 'gpt-4o-transcribe';
+const STT_MODEL = process.env.STT_MODEL || 'whisper-1';
 const TTS_MODEL = process.env.TTS_MODEL || 'gpt-4o-mini-tts';
 
 app.use(cors());
